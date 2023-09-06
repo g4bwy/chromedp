@@ -41,6 +41,9 @@ type Target struct {
 
 	// Indicates if the target is a worker target.
 	isWorker bool
+
+	// Indicates if the target is the browser target.
+	isBrowser bool
 }
 
 func (t *Target) enclosingFrame(node *cdp.Node) cdp.FrameID {

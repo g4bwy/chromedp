@@ -144,16 +144,21 @@ func (b *Browser) newExecutorForTarget(ctx context.Context, targetID target.ID, 
 	}
 	t := &Target{
 		browser:   b,
-		TargetID:  targetID,
 		SessionID: sessionID,
 
 		messageQueue: make(chan *cdproto.Message, 1024),
 		frames:       make(map[cdp.FrameID]*cdp.Frame),
 		execContexts: make(map[cdp.FrameID]runtime.ExecutionContextID),
-		cur:          cdp.FrameID(targetID),
 
 		logf: b.logf,
 		errf: b.errf,
+	}
+
+	if targetID != browserTargetID {
+		t.TargetID = targetID
+		t.cur = cdp.FrameID(targetID)
+	} else {
+		t.isBrowser = true
 	}
 
 	// This send should be blocking, to ensure the tab is inserted into the

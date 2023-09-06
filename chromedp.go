@@ -30,6 +30,10 @@ import (
 	"github.com/chromedp/cdproto/target"
 )
 
+const (
+	browserTargetID = "browserTargetId"
+)
+
 // Context is attached to any context.Context which is valid for use with Run.
 type Context struct {
 	// Allocator is used to create new browsers. It is inherited from the
@@ -346,7 +350,7 @@ func (c *Context) newTarget(ctx context.Context) error {
 		// Since at the time of writing this (2020-1-27), Page.* CDP methods are
 		// not implemented in worker targets, we need to skip this step when we
 		// attach to workers.
-		if !c.Target.isWorker {
+		if !c.Target.isBrowser && !c.Target.isWorker {
 			tree, err := page.GetFrameTree().Do(cdp.WithExecutor(ctx, c.Target))
 			if err != nil {
 				return err
@@ -423,9 +427,19 @@ func (c *Context) newTarget(ctx context.Context) error {
 }
 
 func (c *Context) attachTarget(ctx context.Context, targetID target.ID) error {
-	sessionID, err := target.AttachToTarget(targetID).WithFlatten(true).Do(cdp.WithExecutor(ctx, c.Browser))
-	if err != nil {
-		return err
+	var sessionID target.SessionID
+	var err error
+
+	if targetID == browserTargetID {
+		sessionID, err = target.AttachToBrowserTarget().Do(cdp.WithExecutor(ctx, c.Browser))
+		if err != nil {
+			return err
+		}
+	} else {
+		sessionID, err = target.AttachToTarget(targetID).WithFlatten(true).Do(cdp.WithExecutor(ctx, c.Browser))
+		if err != nil {
+			return err
+		}
 	}
 
 	c.Target, err = c.Browser.newExecutorForTarget(ctx, targetID, sessionID)
@@ -436,34 +450,42 @@ func (c *Context) attachTarget(ctx context.Context, targetID target.ID) error {
 	c.Target.listeners = append(c.Target.listeners, c.targetListeners...)
 	go c.Target.run(ctx)
 
-	// Check if this is a worker target. We cannot use Target.getTargetInfo or
-	// Target.getTargets in a worker, so we check if "self" refers to a
-	// WorkerGlobalScope or ServiceWorkerGlobalScope.
-	if err := runtime.Enable().Do(cdp.WithExecutor(ctx, c.Target)); err != nil {
-		return err
+	if !c.Target.isBrowser {
+		// Check if this is a worker target. We cannot use Target.getTargetInfo or
+		// Target.getTargets in a worker, so we check if "self" refers to a
+		// WorkerGlobalScope or ServiceWorkerGlobalScope.
+		if err := runtime.Enable().Do(cdp.WithExecutor(ctx, c.Target)); err != nil {
+			return err
+		}
+		res, _, err := runtime.Evaluate("self").Do(cdp.WithExecutor(ctx, c.Target))
+		if err != nil {
+			return err
+		}
+		c.Target.isWorker = strings.Contains(res.ClassName, "WorkerGlobalScope")
 	}
-	res, _, err := runtime.Evaluate("self").Do(cdp.WithExecutor(ctx, c.Target))
-	if err != nil {
-		return err
-	}
-	c.Target.isWorker = strings.Contains(res.ClassName, "WorkerGlobalScope")
 
 	// Enable available domains and discover targets.
-	actions := []Action{
-		log.Enable(),
-		network.Enable(),
-	}
-	// These actions are not available on a worker target.
-	if !c.Target.isWorker {
+	actions := []Action{}
+
+	// These actions are not available on a browser target.
+	if !c.Target.isBrowser {
 		actions = append(actions, []Action{
-			inspector.Enable(),
-			page.Enable(),
-			dom.Enable(),
-			css.Enable(),
-			target.SetDiscoverTargets(true),
-			target.SetAutoAttach(true, false).WithFlatten(true),
-			page.SetLifecycleEventsEnabled(true),
+			log.Enable(),
+			network.Enable(),
 		}...)
+
+		// These actions are not available on a worker target.
+		if !c.Target.isWorker {
+			actions = append(actions, []Action{
+				inspector.Enable(),
+				page.Enable(),
+				dom.Enable(),
+				css.Enable(),
+				target.SetDiscoverTargets(true),
+				target.SetAutoAttach(true, false).WithFlatten(true),
+				page.SetLifecycleEventsEnabled(true),
+			}...)
+		}
 	}
 
 	for _, action := range actions {
@@ -481,6 +503,10 @@ type ContextOption = func(*Context)
 // of creating a new one.
 func WithTargetID(id target.ID) ContextOption {
 	return func(c *Context) { c.targetID = id }
+}
+
+func WithBrowserTarget() ContextOption {
+	return func(c *Context) { c.targetID = browserTargetID }
 }
 
 // CreateBrowserContextOption is a BrowserContext creation options.
